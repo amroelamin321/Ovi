@@ -27,8 +27,8 @@ from ovi.ovi_fusion_engine import OviFusionEngine
 
 config = OmegaConf.load("/app/ovi/configs/inference/inference_fusion.yaml")
 
-# ⭐ CORRECTED PATH - models are in /runpod-volume/Ovi/ckpts/
-config.ckpt_dir = "/runpod-volume/Ovi/ckpts"
+# ⭐ CORRECTED PATH - Network Volume mounts at /workspace in serverless
+config.ckpt_dir = "/workspace/Ovi/ckpts"
 config.output_dir = "/tmp/outputs"
 config.fp8 = True
 config.cpu_offload = True
