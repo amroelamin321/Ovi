@@ -11,7 +11,6 @@ from PIL import Image
 from io import BytesIO
 from omegaconf import OmegaConf
 
-# Cloudinary config from environment
 cloudinary.config(
     cloud_name=os.environ.get("CLOUDINARY_CLOUD_NAME"),
     api_key=os.environ.get("CLOUDINARY_API_KEY"),
@@ -20,21 +19,16 @@ cloudinary.config(
 
 logging.basicConfig(level=logging.INFO, format="[%(asctime)s] %(levelname)s: %(message)s")
 
-# ============================================
-# LOAD MODEL AT STARTUP FROM NETWORK VOLUME
-# ============================================
 logging.info("Initializing OVI 1.1 from Network Volume...")
 
-# Add repo to path
 sys.path.insert(0, "/app")
 
 from ovi.ovi_fusion_engine import OviFusionEngine
 
 config = OmegaConf.load("/app/ovi/configs/inference/inference_fusion.yaml")
 
-# OVI 1.1 10-second 960x960 + 24GB VRAM settings
-config.model_name = "960x960_10s"
-config.ckpt_dir = "/runpod-volume/ckpts"
+# ⭐ CORRECTED PATH - models are in /runpod-volume/Ovi/ckpts/
+config.ckpt_dir = "/runpod-volume/Ovi/ckpts"
 config.output_dir = "/tmp/outputs"
 config.fp8 = True
 config.cpu_offload = True
@@ -43,9 +37,6 @@ torch.cuda.set_device(0)
 ovi_engine = OviFusionEngine(config=config, device=0, target_dtype=torch.bfloat16)
 logging.info("OVI 1.1 engine ready!")
 
-# ============================================
-# HELPER FUNCTIONS
-# ============================================
 def download_image(url):
     response = requests.get(url, timeout=120)
     response.raise_for_status()
@@ -58,9 +49,6 @@ def upload_to_cloudinary(path):
     result = cloudinary.uploader.upload(path, resource_type="video", folder="ovi_outputs")
     return result["secure_url"]
 
-# ============================================
-# MAIN HANDLER
-# ============================================
 def handler(job):
     try:
         inp = job["input"]
@@ -80,7 +68,6 @@ def handler(job):
             if not image_url:
                 return {"error": "image_url required for i2v mode", "status": "failed"}
             image_path = download_image(image_url)
-            logging.info(f"Downloaded image: {image_path}")
         
         logging.info(f"Generating video: mode={mode}, {height}x{width}, seed={seed}")
         
@@ -104,10 +91,7 @@ def handler(job):
         out_path = f"/tmp/outputs/ovi_{seed}.mp4"
         save_video(out_path, video, audio, fps=24, sample_rate=16000)
         
-        logging.info(f"Video saved: {out_path}")
-        
         video_url = upload_to_cloudinary(out_path)
-        logging.info(f"Uploaded to Cloudinary: {video_url}")
         
         os.remove(out_path)
         if image_path:
