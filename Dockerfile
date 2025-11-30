@@ -2,26 +2,22 @@ FROM runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04
 
 WORKDIR /app
 
+# System dependencies
 RUN apt-get update && apt-get install -y \
-    git ffmpeg libsndfile1 wget \
+    git ffmpeg libsndfile1 \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy repo files
+# Copy repo code (NO models - they are on Network Volume)
 COPY . /app
 
-# Install dependencies
+# Install RunPod and Cloudinary
 RUN pip install --no-cache-dir runpod cloudinary requests Pillow
+
+# Install OVI requirements
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Flash attention (optional)
-RUN pip install flash_attn --no-build-isolation || true
-
-# Download weights (includes 10s model from latest repo)
-RUN python3 download_weights.py
-
-# Download FP8 weights for 24GB VRAM
-RUN wget -O "./ckpts/Ovi/model_fp8_e4m3fn.safetensors" \
-    "https://huggingface.co/rkfg/Ovi-fp8_quantized/resolve/main/model_fp8_e4m3fn.safetensors"
+# Try to install Flash Attention (optional, skip if fails)
+RUN pip install flash_attn --no-build-isolation || echo "Flash Attention skipped"
 
 ENV PYTHONUNBUFFERED=1
 
