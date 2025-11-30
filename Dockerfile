@@ -16,8 +16,8 @@ RUN pip install --no-cache-dir runpod cloudinary requests Pillow
 # Install OVI requirements
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Try to install Flash Attention (optional, skip if fails)
-RUN pip install flash_attn --no-build-isolation || echo "Flash Attention skipped"
+# ❌ SKIP Flash Attention - causes build timeouts and is optional
+# Flash attention provides minor speed improvements but OVI works fine without it
 
 ENV PYTHONUNBUFFERED=1
 
