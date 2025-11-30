@@ -11,7 +11,7 @@ from PIL import Image
 from io import BytesIO
 from omegaconf import OmegaConf
 
-# Cloudinary config
+# Cloudinary config from environment
 cloudinary.config(
     cloud_name=os.environ.get("CLOUDINARY_CLOUD_NAME"),
     api_key=os.environ.get("CLOUDINARY_API_KEY"),
@@ -21,30 +21,33 @@ cloudinary.config(
 logging.basicConfig(level=logging.INFO, format="[%(asctime)s] %(levelname)s: %(message)s")
 
 # ============================================
-# LOAD MODEL AT STARTUP
+# LOAD MODEL AT STARTUP FROM NETWORK VOLUME
 # ============================================
-logging.info("Loading OVI 1.1...")
+logging.info("Initializing OVI 1.1 from Network Volume...")
+
+# Add repo to path
+sys.path.insert(0, "/app")
 
 from ovi.ovi_fusion_engine import OviFusionEngine
 
-config = OmegaConf.load("ovi/configs/inference/inference_fusion.yaml")
+config = OmegaConf.load("/app/ovi/configs/inference/inference_fusion.yaml")
 
-# 24GB VRAM settings
+# OVI 1.1 10-second 960x960 + 24GB VRAM settings
+config.model_name = "960x960_10s"
+config.ckpt_dir = "/runpod-volume/ckpts"
+config.output_dir = "/tmp/outputs"
 config.fp8 = True
 config.cpu_offload = True
-config.ckpt_dir = "./ckpts"
-config.output_dir = "/tmp/outputs"
-config.video_frame_height_width = [960, 960]
 
 torch.cuda.set_device(0)
 ovi_engine = OviFusionEngine(config=config, device=0, target_dtype=torch.bfloat16)
-logging.info("OVI engine loaded!")
+logging.info("OVI 1.1 engine ready!")
 
 # ============================================
-# HELPERS
+# HELPER FUNCTIONS
 # ============================================
 def download_image(url):
-    response = requests.get(url, timeout=60)
+    response = requests.get(url, timeout=120)
     response.raise_for_status()
     img = Image.open(BytesIO(response.content))
     temp_path = tempfile.NamedTemporaryFile(suffix=".png", delete=False).name
@@ -56,7 +59,7 @@ def upload_to_cloudinary(path):
     return result["secure_url"]
 
 # ============================================
-# HANDLER
+# MAIN HANDLER
 # ============================================
 def handler(job):
     try:
@@ -75,11 +78,11 @@ def handler(job):
         image_path = None
         if mode == "i2v":
             if not image_url:
-                return {"error": "image_url required for i2v", "status": "failed"}
+                return {"error": "image_url required for i2v mode", "status": "failed"}
             image_path = download_image(image_url)
             logging.info(f"Downloaded image: {image_path}")
         
-        logging.info(f"Generating video: mode={mode}, {height}x{width}")
+        logging.info(f"Generating video: mode={mode}, {height}x{width}, seed={seed}")
         
         video, audio, _ = ovi_engine.generate(
             text_prompt=prompt,
@@ -101,8 +104,10 @@ def handler(job):
         out_path = f"/tmp/outputs/ovi_{seed}.mp4"
         save_video(out_path, video, audio, fps=24, sample_rate=16000)
         
+        logging.info(f"Video saved: {out_path}")
+        
         video_url = upload_to_cloudinary(out_path)
-        logging.info(f"Uploaded: {video_url}")
+        logging.info(f"Uploaded to Cloudinary: {video_url}")
         
         os.remove(out_path)
         if image_path:
@@ -111,7 +116,7 @@ def handler(job):
         return {"video_url": video_url, "status": "success"}
     
     except Exception as e:
-        logging.error(f"Error: {e}")
+        logging.error(f"Error: {str(e)}")
         return {"error": str(e), "status": "failed"}
 
 runpod.serverless.start({"handler": handler})
