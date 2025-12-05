@@ -1,24 +1,27 @@
-FROM runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04
+FROM nvcr.io/nvidia/pytorch:24.10-py3
 
-WORKDIR /app
+WORKDIR /workspace
 
-# System dependencies
 RUN apt-get update && apt-get install -y \
-    git ffmpeg libsndfile1 \
+    git ffmpeg libsm6 libxext6 libxrender-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy repo code (NO models - they are on Network Volume)
-COPY . /app
+COPY . /workspace/Ovi
+WORKDIR /workspace/Ovi
 
-# Install RunPod and Cloudinary
-RUN pip install --no-cache-dir runpod cloudinary requests Pillow
+# Install Python dependencies
+RUN pip install --no-cache-dir \
+    torch==2.6.0 torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124 && \
+    pip install --no-cache-dir \
+    transformers diffusers accelerate optimum optimum-quanto \
+    omegaconf einops safetensors \
+    librosa soundfile scipy pydub opencv-python av \
+    moviepy==1.0.3 open-clip-torch ftfy pandas \
+    cloudinary requests Pillow numpy tqdm flask
 
-# Install OVI requirements
-RUN pip install --no-cache-dir -r requirements.txt
+# Pre-download model to avoid cold start delays (optional - speeds up first run)
+RUN mkdir -p /workspace/ckpts && \
+    python3 download_weights.py --output-dir /workspace/ckpts --models 960x960_10s || true
 
-# ❌ SKIP Flash Attention - causes build timeouts and is optional
-# Flash attention provides minor speed improvements but OVI works fine without it
-
-ENV PYTHONUNBUFFERED=1
-
-CMD ["python3", "-u", "rp_handler.py"]
+COPY handler.py /workspace/handler.py
+CMD ["python3", "-u", "/workspace/handler.py"]
