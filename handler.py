@@ -1,24 +1,18 @@
 import os
 import json
-import torch
+import subprocess
+import tempfile
+import requests
 from pathlib import Path
 import cloudinary
 import cloudinary.uploader
-import tempfile
-import requests
 from PIL import Image
 import io
-from omegaconf import OmegaConf
-import sys
-sys.path.insert(0, '/workspace/Ovi')
 
-from ovi.ovi_fusion_engine import OviFusionEngine
-from ovi.utils.io_utils import save_video
-
-# Cloudinary
+# Cloudinary config
 cloudinary.config(
     cloud_name=os.environ["CLOUDINARY_CLOUD_NAME"],
-    api_key=os.environ["CLOUDINARY_API_KEY"], 
+    api_key=os.environ["CLOUDINARY_API_KEY"],
     api_secret=os.environ["CLOUDINARY_API_SECRET"]
 )
 
@@ -26,83 +20,90 @@ def handler(event):
     try:
         input_data = event["input"]
         prompt = input_data.get("prompt")
-        image_url = input_data.get("image_url", None)
+        image_url = input_data.get("image_url")
         seed = input_data.get("seed", 42)
         
         if not prompt:
-            return {"error": "Missing prompt"}
+            return {"error": "prompt required"}
         
-        print(f"🚀 OVI 1.1 {'i2v' if image_url else 't2v'} - {prompt[:50]}...")
+        print(f"🚀 OVI 1.1 ({'i2v' if image_url else 't2v'}) - {prompt[:50]}")
         
-        # Load 10s config + model
-        config_path = "/workspace/Ovi/ovi/configs/inference/inference_fusion.yaml"
-        config = OmegaConf.load(config_path)
-        config.ckpt_dir = "/workspace/ckpts"
-        config.model_name = "960x960_10s"
-        config.sp_size = 1
-        config.cpu_offload = False
-        config.fp8 = False
+        # Create temp config file (OVI inference.py reads YAML)
+        config_path = "/tmp/inference_config.yaml"
+        mode = "i2v" if image_url else "t2v"
         
-        engine = OviFusionEngine(
-            config=config, 
-            device=0, 
-            target_dtype=torch.bfloat16
-        )
+        config_content = f"""
+output_dir: /tmp
+ckpt_dir: /workspace/ckpts
+model_name: 960x960_10s
+sp_size: 1
+cpu_offload: false
+fp8: false
+text_prompt: "{prompt}"
+mode: {mode}
+video_frame_height_width: [960, 960]
+seed: {seed}
+solver_name: unipc
+sample_steps: 50
+shift: 5.0
+video_guidance_scale: 4.0
+audio_guidance_scale: 3.0
+slg_layer: 11
+video_negative_prompt: "jitter, bad hands, blur"
+audio_negative_prompt: "robotic, muffled"
+"""
         
-        gen_kwargs = {
-            "text_prompt": prompt,
-            "video_frame_height_width": [960, 960],
-            "seed": seed,
-            "solver_name": "unipc",
-            "sample_steps": 50,
-            "shift": 5.0, 
-            "video_guidance_scale": 4.0,
-            "audio_guidance_scale": 3.0,
-            "slg_layer": 11,
-            "video_negative_prompt": "jitter, bad hands, blur",
-            "audio_negative_prompt": "robotic, muffled"
-        }
+        with open(config_path, "w") as f:
+            f.write(config_content)
         
+        # i2v: download image to /tmp/input.jpg
         image_path = None
         if image_url:
             resp = requests.get(image_url)
             img = Image.open(io.BytesIO(resp.content)).convert("RGB")
-            with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as f:
-                img.save(f.name)
-                image_path = f.name
-            gen_kwargs["image_path"] = image_path
+            image_path = "/tmp/input.jpg"
+            img.save(image_path)
         
-        # Generate 10s video+audio
-        video, audio, _ = engine.generate(**gen_kwargs)
+        # Run OFFICIAL inference.py (exact repo command)
+        cmd = [
+            "python", "inference.py",
+            "--config-file", config_path
+        ]
         
-        # Save MP4
-        out_path = f"/tmp/ovi_{seed}.mp4"
-        save_video(out_path, video, audio, fps=24, sample_rate=16000)
+        result = subprocess.run(cmd, capture_output=True, text=True, cwd="/workspace/Ovi")
+        
+        if result.returncode != 0:
+            print("inference.py failed:", result.stderr)
+            return {"error": result.stderr}
+        
+        # Find generated video (inference.py saves to output_dir)
+        video_files = list(Path("/tmp").glob("*.mp4"))
+        if not video_files:
+            return {"error": "No video generated"}
+        
+        video_path = video_files[0]
         
         # Upload to Cloudinary
-        result = cloudinary.uploader.upload_large(
-            out_path,
+        upload_result = cloudinary.uploader.upload_large(
+            str(video_path),
             resource_type="video",
-            folder="ovi_1.1_outputs",
+            folder="ovi_1.1",
             public_id=f"ovi_{seed}"
         )
         
         # Cleanup
-        if image_path and os.path.exists(image_path):
-            os.unlink(image_path)
-        os.unlink(out_path)
+        Path(config_path).unlink(missing_ok=True)
+        if image_path:
+            Path(image_path).unlink(missing_ok=True)
+        video_path.unlink(missing_ok=True)
         
         return {
             "status": "success",
-            "video_url": result["secure_url"],
-            "duration_seconds": 10,
-            "resolution": "960x960", 
-            "seed": seed,
-            "cloudinary_public_id": result["public_id"]
+            "video_url": upload_result["secure_url"],
+            "duration": 10,
+            "resolution": "960x960",
+            "seed": seed
         }
         
     except Exception as e:
-        print(f"❌ ERROR: {str(e)}")
-        import traceback
-        traceback.print_exc()
         return {"error": str(e), "status": "failed"}
